@@ -181,7 +181,11 @@ class TestDocumentRecallEvaluatorSingleHit:
         data = evaluator.to_dict()
         assert data == {
             "type": "haystack.components.evaluators.document_recall.DocumentRecallEvaluator",
-            "init_parameters": {"mode": "single_hit", "document_comparison_field": "content"},
+            "init_parameters": {
+                "mode": "single_hit",
+                "document_comparison_field": "content",
+                "return_missing_documents": False,
+            },
         }
 
     def test_from_dict(self):
@@ -311,7 +315,11 @@ class TestDocumentRecallEvaluatorMultiHit:
         data = evaluator.to_dict()
         assert data == {
             "type": "haystack.components.evaluators.document_recall.DocumentRecallEvaluator",
-            "init_parameters": {"mode": "multi_hit", "document_comparison_field": "content"},
+            "init_parameters": {
+                "mode": "multi_hit",
+                "document_comparison_field": "content",
+                "return_missing_documents": False,
+            },
         }
 
     def test_from_dict(self):
@@ -361,3 +369,49 @@ class TestDocumentRecallEvaluatorMultiHit:
             retrieved_documents=[[Document(meta={"file_id": "f1"})]],
         )
         assert result == {"individual_scores": [1.0], "score": 1.0}
+
+
+class TestMissingDocuments:
+    def test_missing_documents_not_returned_by_default(self):
+        evaluator = DocumentRecallEvaluator(mode=RecallMode.MULTI_HIT)
+        result = evaluator.run(
+            ground_truth_documents=[[Document(content="a"), Document(content="b")]],
+            retrieved_documents=[[Document(content="a")]],
+        )
+        assert result == {"individual_scores": [0.5], "score": 0.5}
+
+    @pytest.mark.parametrize("mode", [RecallMode.SINGLE_HIT, RecallMode.MULTI_HIT])
+    def test_missing_documents_per_query(self, mode):
+        evaluator = DocumentRecallEvaluator(mode=mode, return_missing_documents=True)
+        result = evaluator.run(
+            ground_truth_documents=[
+                [Document(content="a"), Document(content="b"), Document(content="c"), Document(content="b")],
+                [Document(content="x")],
+                [Document(content="y")],
+            ],
+            retrieved_documents=[[Document(content="b"), Document(content="z")], [Document(content="x")], []],
+        )
+        assert result["missing_documents"] == [["a", "c"], [], ["y"]]
+        if mode == RecallMode.MULTI_HIT:
+            assert result["individual_scores"] == [1 / 3, 1.0, 0.0]
+        else:
+            assert result["individual_scores"] == [1.0, 1.0, 0.0]
+
+    def test_missing_documents_ignores_invalid_values(self):
+        evaluator = DocumentRecallEvaluator(document_comparison_field="meta.file_id", return_missing_documents=True)
+        result = evaluator.run(
+            ground_truth_documents=[[Document(content="a"), Document(content="b", meta={"file_id": "f2"})]],
+            retrieved_documents=[[Document(content="c", meta={"file_id": "f1"})]],
+        )
+        assert result["missing_documents"] == [["f2"]]
+
+    def test_missing_documents_with_id_comparison(self):
+        gt = Document(content="a")
+        evaluator = DocumentRecallEvaluator(document_comparison_field="id", return_missing_documents=True)
+        result = evaluator.run(ground_truth_documents=[[gt]], retrieved_documents=[[Document(content="b")]])
+        assert result["missing_documents"] == [[gt.id]]
+
+    def test_serde_roundtrip(self):
+        evaluator = DocumentRecallEvaluator(return_missing_documents=True)
+        new_evaluator = default_from_dict(DocumentRecallEvaluator, evaluator.to_dict())
+        assert new_evaluator.return_missing_documents is True

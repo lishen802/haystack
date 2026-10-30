@@ -70,7 +70,10 @@ class DocumentRecallEvaluator:
     """
 
     def __init__(
-        self, mode: str | RecallMode = RecallMode.SINGLE_HIT, document_comparison_field: str = "content"
+        self,
+        mode: str | RecallMode = RecallMode.SINGLE_HIT,
+        document_comparison_field: str = "content",
+        return_missing_documents: bool = False,
     ) -> None:
         """
         Create a DocumentRecallEvaluator component.
@@ -85,12 +88,16 @@ class DocumentRecallEvaluator:
               (e.g. `"meta.file_id"`, `"meta.page_number"`)
               Nested keys are supported (e.g. `"meta.source.url"`).
               Values may also be lists or dictionaries.
+        :param return_missing_documents:
+            If `True`, `run` also returns `missing_documents`: for each question, the comparison values of the ground
+            truth documents that were not retrieved. Defaults to `False`, which keeps the output unchanged.
         """
         if isinstance(mode, str):
             mode = RecallMode.from_str(mode)
 
         self.mode = mode
         self.document_comparison_field = document_comparison_field
+        self.return_missing_documents = return_missing_documents
 
     def _get_comparison_value(self, doc: Document) -> Any:
         """
@@ -156,7 +163,23 @@ class DocumentRecallEvaluator:
 
         return len(unique_truths.intersection(unique_retrievals)) / len(unique_truths)
 
-    @component.output_types(score=float, individual_scores=list[float])
+    def _missing_values(self, ground_truth_documents: list[Document], retrieved_documents: list[Document]) -> list[Any]:
+        """
+        Return the comparison values of ground truth documents that are absent from the retrieved documents.
+
+        Values are deduplicated and kept in the order they first appear in `ground_truth_documents`.
+        Ground truth documents without a valid comparison value are ignored.
+        """
+        retrieved = self._unique_comparison_values(retrieved_documents)
+        missing: list[Any] = []
+        for doc in ground_truth_documents:
+            value = self._get_comparison_value(doc)
+            if value in ("", None) or value in retrieved or value in missing:
+                continue
+            missing.append(value)
+        return missing
+
+    @component.output_types(score=float, individual_scores=list[float], missing_documents=list[list[Any]])
     def run(
         self, ground_truth_documents: list[list[Document]], retrieved_documents: list[list[Document]]
     ) -> dict[str, Any]:
@@ -173,6 +196,10 @@ class DocumentRecallEvaluator:
             - `score` - The average of calculated scores.
             - `individual_scores` - A list of numbers from 0.0 to 1.0 that represents the proportion of matching
                 documents retrieved. If the mode is `single_hit`, the individual scores are 0 or 1.
+            - `missing_documents` - Only returned if `return_missing_documents` is `True`. For each question, the
+                comparison values (as configured by `document_comparison_field`, e.g. the content or the ID) of the
+                ground truth documents that were not retrieved, deduplicated and in ground truth order. Useful to
+                diagnose which supporting documents were missed. This output does not affect the scores.
         """
         if len(ground_truth_documents) == 0 or len(retrieved_documents) == 0:
             msg = "ground_truth_documents and retrieved_documents must be provided."
@@ -189,7 +216,13 @@ class DocumentRecallEvaluator:
 
         scores = [mode_function(gt, ret) for gt, ret in zip(ground_truth_documents, retrieved_documents, strict=True)]
 
-        return {"score": sum(scores) / len(retrieved_documents), "individual_scores": scores}
+        result: dict[str, Any] = {"score": sum(scores) / len(retrieved_documents), "individual_scores": scores}
+        if self.return_missing_documents:
+            result["missing_documents"] = [
+                self._missing_values(gt, ret)
+                for gt, ret in zip(ground_truth_documents, retrieved_documents, strict=True)
+            ]
+        return result
 
     def to_dict(self) -> dict[str, Any]:
         """
@@ -198,4 +231,9 @@ class DocumentRecallEvaluator:
         :returns:
             Dictionary with serialized data.
         """
-        return default_to_dict(self, mode=str(self.mode), document_comparison_field=self.document_comparison_field)
+        return default_to_dict(
+            self,
+            mode=str(self.mode),
+            document_comparison_field=self.document_comparison_field,
+            return_missing_documents=self.return_missing_documents,
+        )

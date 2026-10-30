@@ -1,0 +1,8 @@
+---
+enhancements:
+  - |
+    ``DocumentRecallEvaluator`` accepts a new ``return_missing_documents`` init parameter. When set to ``True``,
+    ``run`` also returns ``missing_documents``: for each query, the comparison values (as set by
+    ``document_comparison_field``) of the ground truth documents that were not retrieved. This helps diagnose
+    which supporting documents a retriever missed, for example in multi-hop retrieval. The default output and the
+    scores are unchanged.
